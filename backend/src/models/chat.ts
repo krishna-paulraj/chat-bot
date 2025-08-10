@@ -1,37 +1,65 @@
 import "dotenv/config";
 import { GoogleGenAI } from "@google/genai";
+import { getGeminiToolDeclarations, executeTool } from "../tools/index.js";
 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY || "",
 });
 
-// Chat session interface
-export interface ChatSession {
-    id: string;
-    history: Array<{
-        role: "user" | "model";
-        parts: Array<{ text: string }>;
-    }>;
-    createdAt: Date;
-    lastActivity: Date;
-}
-
-// In-memory storage for chat sessions (in production, use a database)
-const chatSessions: Map<string, ChatSession> = new Map();
-
 export async function chat(message: string) {
+    const tools = getGeminiToolDeclarations();
+
     const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: message,
+        config: {
+            tools: tools.length > 0 ? [{ functionDeclarations: tools }] : [],
+        }
     });
+
+    // Check if the response contains tool calls
+    if (response.candidates?.[0]?.content?.parts) {
+        const parts = response.candidates[0].content.parts;
+        let finalResponse = "";
+
+        for (const part of parts) {
+            if (part.text) {
+                finalResponse += part.text;
+            } else if (part.functionCall) {
+                // Execute the tool
+                try {
+                    const toolResult = await executeTool(
+                        part.functionCall?.name || "",
+                        part.functionCall?.args
+                    );
+
+                    // Create a simple response with the tool result
+                    const toolResultText = typeof toolResult === 'object'
+                        ? JSON.stringify(toolResult, null, 2)
+                        : String(toolResult);
+
+                    finalResponse += `\n\nCalculation result: ${toolResultText}`;
+                } catch (error) {
+                    finalResponse += `\n\nError executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`;
+                }
+            }
+        }
+
+        return finalResponse || "No response generated";
+    }
 
     return response.text || "No response generated";
 }
 
 export async function chatStream(message: string) {
+    const tools = getGeminiToolDeclarations();
+
     const response = await ai.models.generateContentStream({
         model: "gemini-2.5-flash",
-        contents: "Explain how AI works in 100 words",
+        contents: message,
+        config: {
+            tools: tools.length > 0 ? [{ functionDeclarations: tools }] : [],
+        }
     });
 
     for await (const chunk of response) {
@@ -39,82 +67,4 @@ export async function chatStream(message: string) {
     }
 }
 
-export async function createChatSession(initialMessage?: string): Promise<ChatSession> {
-    const sessionId = generateSessionId();
 
-    const session: ChatSession = {
-        id: sessionId,
-        history: [],
-        createdAt: new Date(),
-        lastActivity: new Date()
-    };
-
-    // Add initial message if provided
-    if (initialMessage) {
-        session.history.push({
-            role: "user",
-            parts: [{ text: initialMessage }]
-        });
-
-        // Get AI response
-        const aiResponse = await chat(initialMessage);
-        session.history.push({
-            role: "model",
-            parts: [{ text: aiResponse }]
-        });
-    }
-
-    chatSessions.set(sessionId, session);
-    return session;
-}
-
-export async function sendMessage(sessionId: string, message: string): Promise<{ response: string; session: ChatSession }> {
-    const session = chatSessions.get(sessionId);
-    if (!session) {
-        throw new Error("Chat session not found");
-    }
-
-    // Add user message to history
-    session.history.push({
-        role: "user",
-        parts: [{ text: message }]
-    });
-
-    // Create chat instance with history
-    const chat = ai.chats.create({
-        model: "gemini-1.5-flash",
-        history: session.history
-    });
-
-    // Send message and get response
-    const result = await chat.sendMessage({ message: [{ text: message }] });
-    const response = result.text || "No response generated";
-
-    // Add AI response to history
-    session.history.push({
-        role: "model",
-        parts: [{ text: response }]
-    });
-
-    // Update last activity
-    session.lastActivity = new Date();
-    chatSessions.set(sessionId, session);
-
-    return { response, session };
-}
-
-export function getChatSession(sessionId: string): ChatSession | undefined {
-    return chatSessions.get(sessionId);
-}
-
-export function getAllChatSessions(): ChatSession[] {
-    return Array.from(chatSessions.values());
-}
-
-export function deleteChatSession(sessionId: string): boolean {
-    return chatSessions.delete(sessionId);
-}
-
-function generateSessionId(): string {
-    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}

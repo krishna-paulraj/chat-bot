@@ -5,7 +5,6 @@ import cors from "cors";
 import { WebSocketServer } from "ws";
 
 import chatRouter from "./routes/chat.js";
-import { handleConnection } from "./controllers/socketController.js";
 
 dotenv.config();
 
@@ -21,13 +20,10 @@ app.get("/", (req, res) => {
     res.send("Hello World");
 });
 
-wss.on("connection", (ws) => {
-    handleConnection(ws);
-});
-
 
 app.use("/chat", chatRouter);
 
-server.listen(8000, () => {
-    console.log("Server is running on port 8000");
+const PORT = process.env.PORT || 8000;
+server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
 });
